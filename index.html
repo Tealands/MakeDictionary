@@ -80,7 +80,7 @@
 
         /* 🔍 検索バーのスタイル */
         .search-section {
-            margin-bottom: 20px;
+            margin-bottom: 12px;
             position: relative;
         }
 
@@ -96,6 +96,8 @@
             margin-bottom: 10px;
             font-size: 14px;
             color: #64748b;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         /* 辞書リスト */
@@ -143,9 +145,47 @@
             display: flex;
             gap: 10px;
         }
-        
+
         /* 検索ヒット時のハイライト用（オプション） */
         .highlight { background: #fef08a; padding: 0 2px; border-radius: 2px; }
+
+        /* 👉 頭文字ジャンプ UI */
+        .jump-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+        .jump-label {
+            font-size: 13px;
+            color: #334155;
+            font-weight: 600;
+        }
+        .jump-input {
+            width: 64px;
+            text-transform: uppercase;
+        }
+        .jump-grid {
+            display: grid;
+            grid-template-columns: repeat(13, minmax(28px, 1fr));
+            gap: 4px;
+            width: 100%;
+            max-width: 560px;
+        }
+        .jump-btn {
+            padding: 6px 0;
+            font-size: 12px;
+            background: #e2e8f0;
+            color: #1e293b;
+        }
+        .jump-btn:hover {
+            background: #cbd5e1;
+        }
+        .no-result {
+            color: #dc2626;
+            font-weight: 600;
+        }
     </style>
 </head>
 
@@ -167,9 +207,17 @@
             <input id="search-input" type="text" class="search-input" placeholder="🔍 単語や説明文から検索..." />
         </div>
 
+        <!-- 🧭 頭文字ジャンプ（検索とは独立） -->
+        <div class="jump-row" aria-label="頭文字ジャンプ">
+            <span class="jump-label">頭文字ジャンプ:</span>
+            <input id="jump-input" type="text" class="jump-input" maxlength="1" placeholder="A〜Z" />
+            <div class="jump-grid" id="jump-grid"></div>
+        </div>
+
         <div class="count-row">
             <span id="entry-count">登録件数: 0件</span>
             <span id="search-status" style="display:none; color:#2563eb; font-weight:bold;"></span>
+            <span id="jump-status" style="display:none;"></span>
         </div>
 
         <ul id="dictionary-list"></ul>
@@ -192,6 +240,13 @@
         const countEl = document.getElementById('entry-count');
         const statusEl = document.getElementById('search-status');
 
+        // 🧭 追加: ジャンプ周り
+        const jumpGrid = document.getElementById('jump-grid');
+        const jumpInput = document.getElementById('jump-input');
+        const jumpStatus = document.getElementById('jump-status');
+        const LETTERS = Array.from('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+        let letterIndexMap = {}; // { 'A': <li>, 'B': <li>, ... } 先頭出現要素を保持
+
         function save() {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(dictionary));
         }
@@ -204,27 +259,49 @@
             render();
         }
 
-        // 描画関数（検索ワードを引数に取る）
+        // HTMLエスケープ
+        function escapeHtml(str = '') {
+            return String(str).replace(/[&<>"']/g, m => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[m]));
+        }
+
+        // 🔤 頭文字を取り出す（英字以外は '#' とする）
+        function getInitial(word = '') {
+            const t = word.trim();
+            if (!t) return '#';
+            const ch = t[0].toUpperCase();
+            return /^[A-Z]$/.test(ch) ? ch : '#';
+        }
+
+        // リスト描画（検索状態に応じたフィルタもここで）
         function render() {
             const query = searchInput.value.toLowerCase().trim();
             listEl.innerHTML = '';
-            
-            // 1. まずソート
+            letterIndexMap = {}; // ←毎回リセットして構築し直す
+
+            // 1. ソート
             dictionary.sort((a, b) => a.word.localeCompare(b.word, 'ja'));
 
             // 2. 検索フィルタリング
             const filtered = dictionary.filter(entry => {
-                return entry.word.toLowerCase().includes(query) || 
+                return entry.word.toLowerCase().includes(query) ||
                        entry.description.toLowerCase().includes(query);
             });
 
-            // 3. 描画
+            // 3. 描画（同時に letterIndexMap を構築）
             filtered.forEach((entry) => {
-                // 元の配列内でのインデックスを探す（削除・編集用）
                 const originalIndex = dictionary.indexOf(entry);
-                
                 const li = document.createElement('li');
                 li.className = 'entry-item';
+
+                const initial = getInitial(entry.word);
+                li.dataset.initial = initial;
+
+                if (!letterIndexMap[initial]) {
+                    letterIndexMap[initial] = li; // 先頭出現を記録
+                }
+
                 li.innerHTML = `
                     <div style="display:flex; justify-content:space-between; align-items:start;">
                         <span class="word">${escapeHtml(entry.word)}</span>
@@ -238,7 +315,7 @@
                 listEl.appendChild(li);
             });
 
-            // 件数表示の更新
+            // 件数表示
             countEl.textContent = `全 ${dictionary.length} 件`;
             if (query) {
                 statusEl.style.display = 'inline';
@@ -246,10 +323,40 @@
             } else {
                 statusEl.style.display = 'none';
             }
+
+            // ジャンプステータスは毎回消しておく
+            jumpStatus.style.display = 'none';
+            jumpStatus.textContent = '';
         }
 
-        function escapeHtml(str) {
-            return str.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+        // 👉 頭文字へジャンプ
+        function jumpToInitial(ch) {
+            const letter = String(ch || '').toUpperCase();
+            if (!/^[A-Z]$/.test(letter)) {
+                showJumpStatus(`A〜Zの英字1文字を入力してください`, true);
+                return;
+            }
+            const target = letterIndexMap[letter];
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                // 一時的に目立たせる
+                target.classList.add('highlight');
+                setTimeout(() => target.classList.remove('highlight'), 900);
+                showJumpStatus(`「${letter}」の位置へ移動しました`, false);
+            } else {
+                showJumpStatus(`「${letter}」で始まる項目はありません`, true);
+            }
+        }
+
+        function showJumpStatus(msg, isError) {
+            jumpStatus.textContent = msg;
+            jumpStatus.className = isError ? 'no-result' : '';
+            jumpStatus.style.display = 'inline';
+            // 数秒で消す
+            clearTimeout(showJumpStatus._t);
+            showJumpStatus._t = setTimeout(() => {
+                jumpStatus.style.display = 'none';
+            }, 2500);
         }
 
         // 検索イベント
@@ -268,7 +375,7 @@
             render();
         });
 
-        // 削除
+        // 削除（グローバル公開）
         window.deleteEntry = (index) => {
             if (confirm(`「${dictionary[index].word}」を削除しますか？`)) {
                 dictionary.splice(index, 1);
@@ -277,7 +384,7 @@
             }
         };
 
-        // 編集
+        // 編集（グローバル公開）
         window.editEntry = (index) => {
             const entry = dictionary[index];
             const newWord = prompt('単語を編集', entry.word);
@@ -306,6 +413,31 @@
             save(); render();
         });
 
+        // 🧭 ジャンプ UI 構築
+        function buildJumpButtons() {
+            jumpGrid.innerHTML = '';
+            LETTERS.forEach(l => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'jump-btn';
+                btn.textContent = l;
+                btn.title = `${l} へジャンプ`;
+                btn.addEventListener('click', () => jumpToInitial(l));
+                jumpGrid.appendChild(btn);
+            });
+        }
+
+        // 入力欄は1文字入力で即ジャンプ（英字以外はエラーメッセージ）
+        jumpInput.addEventListener('input', (e) => {
+            const v = (e.target.value || '').toUpperCase();
+            if (v.length === 1) {
+                jumpToInitial(v);
+            }
+            // 入力欄は常に1文字を保持（2文字以上は切り詰め）
+            e.target.value = v.slice(0, 1);
+        });
+
+        buildJumpButtons();
         load();
     </script>
 </body>
